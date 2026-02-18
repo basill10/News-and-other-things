@@ -1,0 +1,6 @@
+streamlit>=1.31
+pandas>=2.0
+requests>=2.31
+pytrends>=4.9.2
+openai>=1.0
+yt-dlp>=2024.1.0
