@@ -688,14 +688,18 @@ def resolve_api_key(user_key: str) -> Optional[str]:
     if user_key:
         return user_key.strip()
     try:
-        secret_key = st.secrets.get("OPENAI_API_KEY")
-        if secret_key:
-            return str(secret_key).strip()
+        # Streamlit secrets support multiple shapes; accept common variants.
+        for key_name in ("OPENAI_API_KEY", "openai_api_key"):
+            secret_key = st.secrets.get(key_name)
+            if secret_key:
+                return str(secret_key).strip()
+        openai_block = st.secrets.get("openai")
+        if isinstance(openai_block, dict):
+            secret_key = openai_block.get("api_key") or openai_block.get("OPENAI_API_KEY")
+            if secret_key:
+                return str(secret_key).strip()
     except Exception:
         pass
-    env_key = os.getenv("OPENAI_API_KEY")
-    if env_key:
-        return env_key.strip()
     return None
 
 
@@ -831,7 +835,7 @@ def fetch_websearch_articles(
         return [], "openai is not installed. Run: pip install openai"
     resolved_key = resolve_api_key(api_key)
     if not resolved_key:
-        return [], "OpenAI API key not found. Set OPENAI_API_KEY or provide it in the sidebar."
+        return [], "OpenAI API key not found. Add OPENAI_API_KEY to Streamlit secrets (.streamlit/secrets.toml)."
 
     client = OpenAI(api_key=resolved_key)
     prompt = build_websearch_prompt(
@@ -958,7 +962,7 @@ def generate_interpreter_script(
         return "", "openai is not installed. Run: pip install openai"
     resolved_key = resolve_api_key(api_key)
     if not resolved_key:
-        return "", "OpenAI API key not found. Set OPENAI_API_KEY or provide it in the scripting section."
+        return "", "OpenAI API key not found. Add OPENAI_API_KEY to Streamlit secrets (.streamlit/secrets.toml)."
     if not example_script.strip():
         return "", "Example script is empty."
     if len(topics) != 3:
@@ -1093,7 +1097,7 @@ def transcribe_audio(
         return None, "openai is not installed. Run: pip install openai"
     resolved_key = resolve_api_key(api_key)
     if not resolved_key:
-        return None, "OpenAI API key not found. Set OPENAI_API_KEY or provide it in the web search setup."
+        return None, "OpenAI API key not found. Add OPENAI_API_KEY to Streamlit secrets (.streamlit/secrets.toml)."
     if not mp3_path.exists():
         return None, "MP3 file not found."
 
@@ -1124,7 +1128,7 @@ def fetch_momentum_news(
         return [], "openai is not installed. Run: pip install openai"
     resolved_key = resolve_api_key(api_key)
     if not resolved_key:
-        return [], "OpenAI API key not found. Set OPENAI_API_KEY or provide it here."
+        return [], "OpenAI API key not found. Add OPENAI_API_KEY to Streamlit secrets (.streamlit/secrets.toml)."
 
     client = OpenAI(api_key=resolved_key)
     models_to_try = [model_name, "gpt-5"]
@@ -1196,7 +1200,7 @@ def revise_interpreter_script(
         return None, "openai is not installed. Run: pip install openai"
     resolved_key = resolve_api_key(api_key)
     if not resolved_key:
-        return None, "OpenAI API key not found. Set OPENAI_API_KEY or provide it here."
+        return None, "OpenAI API key not found. Add OPENAI_API_KEY to Streamlit secrets (.streamlit/secrets.toml)."
     if not current_script.strip():
         return None, "Current script is empty."
     if not user_request.strip():
@@ -1468,7 +1472,13 @@ with ws_col_a:
     )
 with ws_col_b:
     script_model_name = st.text_input("Model", value="gpt-5.2", key="script_model")
-    script_api_key = st.text_input("OpenAI API key", type="password", key="script_api_key")
+    script_api_key = ""
+    if resolve_api_key(""):
+        st.success("OpenAI API key loaded from Streamlit secrets.")
+    else:
+        st.warning(
+            "Missing OpenAI API key. Add OPENAI_API_KEY to Streamlit secrets (.streamlit/secrets.toml)."
+        )
 
 st.subheader("Find News (Momentum Filter)")
 st.caption("Fetch 10 Pakistan macro-moving items for the week (web search; links included).")
@@ -1482,7 +1492,7 @@ with find_col_a:
         key="find_momentum_news",
     )
 with find_col_b:
-    st.write("Uses the model/API key above.")
+    st.write("Uses the model above and the OpenAI API key from Streamlit secrets.")
 
 if find_news_clicked:
     with st.spinner("Finding momentum news..."):
