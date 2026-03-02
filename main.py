@@ -1624,6 +1624,49 @@ elif st.session_state.get("momentum_news"):
             if idx != len(st.session_state["momentum_news"]):
                 st.divider()
 
+    st.subheader("Use these as topics")
+    st.caption("Select exactly 3 items to copy their headlines into Topics below.")
+    momentum_items = st.session_state.get("momentum_news") or []
+    momentum_labels: List[str] = []
+    label_to_title: Dict[str, str] = {}
+    for idx, item in enumerate(momentum_items, start=1):
+        title = str(item.get("title") or "Untitled").strip()
+        source = str(item.get("source") or "").strip()
+        label = f"{idx}. {title}" + (f" — {source}" if source else "")
+        momentum_labels.append(label)
+        label_to_title[label] = title
+
+    selected_labels = st.multiselect(
+        "Select 3 headlines",
+        options=momentum_labels,
+        default=[],
+        key="momentum_topic_selection",
+    )
+    pick_col_a, pick_col_b = st.columns([1, 1])
+    with pick_col_a:
+        use_selected = st.button(
+            "Use selected as topics",
+            disabled=(len(selected_labels) != 3),
+            key="use_selected_momentum_topics",
+        )
+    with pick_col_b:
+        use_top3 = st.button(
+            "Use top 3 as topics",
+            disabled=(len(momentum_items) < 3),
+            key="use_top3_momentum_topics",
+        )
+
+    if use_selected:
+        st.session_state["script_topics"] = "\n".join(
+            [label_to_title[lbl] for lbl in selected_labels]
+        )
+        st.rerun()
+    if use_top3:
+        st.session_state["script_topics"] = "\n".join(
+            [str((momentum_items[i].get("title") or "")).strip() for i in range(3)]
+        )
+        st.rerun()
+
 st.divider()
 
 script_col_a, script_col_b = st.columns([2, 1])
