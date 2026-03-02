@@ -1645,6 +1645,11 @@ with script_col_b:
         key="script_sources_per_topic",
     )
 
+topics = [line.strip() for line in topics_text.splitlines() if line.strip()]
+topics_ok = len(topics) == 3
+if not topics_ok:
+    st.warning("Enter exactly 3 topics (one per line).")
+
 st.subheader("Uploaded videos/audio (optional)")
 st.caption(
     "Upload video/audio files. We'll convert to MP3 if needed, transcribe, and include the text as extra context."
@@ -1781,7 +1786,7 @@ with article_col_b:
 
 process_articles = st.button(
     "Process article links",
-    disabled=(not OPENAI_AVAILABLE),
+    disabled=(article_use_openai and (not OPENAI_AVAILABLE)),
     key="process_articles",
 )
 if process_articles:
@@ -1903,11 +1908,6 @@ if example_file is not None:
         example_script_text = example_file.getvalue().decode("utf-8", errors="replace")
     except Exception:
         example_script_text = ""
-
-topics = [line.strip() for line in topics_text.splitlines() if line.strip()]
-topics_ok = len(topics) == 3
-if not topics_ok:
-    st.warning("Enter exactly 3 topics (one per line).")
 
 fetch_sources_clicked = st.button(
     "Fetch sources for 3 topics",
