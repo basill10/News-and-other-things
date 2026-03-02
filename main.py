@@ -81,6 +81,23 @@ def clamp01(value: float) -> float:
     return max(0.0, min(1.0, value))
 
 
+EXAMPLE_SCRIPT_FILENAME = "news-interpretter-examples.txt"
+
+
+@st.cache_data(show_spinner=False)
+def load_example_script_text() -> Tuple[str, Optional[str]]:
+    path = Path(__file__).resolve().parent / EXAMPLE_SCRIPT_FILENAME
+    try:
+        if not path.exists():
+            return "", f"Missing `{EXAMPLE_SCRIPT_FILENAME}` in the repo."
+        text = path.read_text(encoding="utf-8", errors="replace").strip()
+        if not text:
+            return "", f"`{EXAMPLE_SCRIPT_FILENAME}` is empty."
+        return text, None
+    except Exception as exc:
+        return "", str(exc)
+
+
 def clean_whitespace(text: str) -> str:
     if not text:
         return ""
@@ -1897,17 +1914,12 @@ if st.session_state.get("expert_context_text"):
         key="download_expert_context",
     )
 
-example_file = st.file_uploader(
-    "One-shot example script (.txt)",
-    type=["txt"],
-    key="example_script_file",
-)
-example_script_text = ""
-if example_file is not None:
-    try:
-        example_script_text = example_file.getvalue().decode("utf-8", errors="replace")
-    except Exception:
-        example_script_text = ""
+st.subheader("One-shot example script")
+example_script_text, example_err = load_example_script_text()
+if example_err:
+    st.error(example_err)
+else:
+    st.success(f"Loaded `{EXAMPLE_SCRIPT_FILENAME}` from the repo.")
 
 fetch_sources_clicked = st.button(
     "Fetch sources for 3 topics",
@@ -1972,7 +1984,7 @@ generate_clicked = st.button(
 )
 if generate_clicked:
     if not example_script_text.strip():
-        st.error("Upload the one-shot example script (.txt) first.")
+        st.error(f"Add `{EXAMPLE_SCRIPT_FILENAME}` to the repo (non-empty) and redeploy.")
     else:
         missing = [t for t in topics if not st.session_state.get("script_sources", {}).get(t)]
         if missing:
