@@ -32,13 +32,6 @@ try:
 except Exception:
     OPENAI_AVAILABLE = False
 
-try:
-    import yt_dlp
-
-    YTDLP_AVAILABLE = True
-except Exception:
-    YTDLP_AVAILABLE = False
-
 GDELT_ENDPOINT = "https://api.gdeltproject.org/api/v2/doc/doc"
 ELEVEN_BASE = "https://api.elevenlabs.io/v1"
 
@@ -1020,103 +1013,9 @@ def generate_interpreter_script(
         return "", str(exc)
 
 
-def download_video_audio(
-    url: str,
-    workdir: Path,
-    cookiefile: Optional[Path] = None,
-    progress_cb: Optional[callable] = None,
-) -> Tuple[Optional[Path], Optional[str]]:
-    if not YTDLP_AVAILABLE:
-        return None, "yt-dlp is not installed. Run: pip install yt-dlp"
-
-    outtmpl = str(workdir / "download.%(ext)s")
-
-    def hook(d):
-        if progress_cb is None:
-            return
-        if d.get("status") == "downloading":
-            total = d.get("total_bytes") or d.get("total_bytes_estimate")
-            downloaded = d.get("downloaded_bytes")
-            if total and downloaded:
-                progress_cb(min(downloaded / total, 1.0))
-        elif d.get("status") == "finished":
-            progress_cb(1.0)
-
-    parsed = urlparse(url)
-    host = (parsed.netloc or "").lower()
-    is_instagram = "instagram.com" in host or "instagr.am" in host
-    is_youtube = (
-        "youtube.com" in host
-        or "youtu.be" in host
-        or host.endswith(".youtube.com")
-        or host.endswith(".youtu.be")
-    )
-
-    ydl_opts = {
-        "format": "bestaudio/best",
-        "outtmpl": outtmpl,
-        "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
-        "progress_hooks": [hook],
-    }
-    if cookiefile and cookiefile.exists():
-        ydl_opts["cookiefile"] = str(cookiefile)
-    if is_instagram:
-        ydl_opts["http_headers"] = {
-            "User-Agent": (
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/122.0.0.0 Safari/537.36"
-            ),
-            "Referer": "https://www.instagram.com/",
-            "Accept-Language": "en-US,en;q=0.9",
-        }
-        ydl_opts["retries"] = 3
-        ydl_opts["extractor_retries"] = 3
-        ydl_opts["sleep_interval_requests"] = 1
-    if is_youtube:
-        # Streamlit Cloud (datacenter IPs) can trigger stricter YouTube behavior; these options
-        # improve reliability for Shorts and some 403 cases without requiring cookies.
-        ydl_opts["http_headers"] = {
-            "User-Agent": (
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/122.0.0.0 Safari/537.36"
-            ),
-            "Referer": "https://www.youtube.com/",
-            "Accept-Language": "en-US,en;q=0.9",
-        }
-        ydl_opts["extractor_args"] = {
-            "youtube": {
-                # Try alternate clients; helps for some Shorts pages and anti-bot responses.
-                "player_client": ["android", "web"],
-            }
-        }
-        ydl_opts["retries"] = 5
-        ydl_opts["extractor_retries"] = 5
-        ydl_opts["sleep_interval_requests"] = 1
-        ydl_opts["geo_bypass"] = True
-
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
-        return Path(filename), None
-    except Exception as exc:
-        msg = str(exc)
-        if "cookies-from-browser" in msg or "cookies" in msg or "login required" in msg:
-            msg += " (Tip: for Instagram, export cookies to a cookies.txt file and upload it in the app.)"
-        if is_instagram and cookiefile and cookiefile.exists():
-            msg += " (cookies.txt was provided but Instagram still blocked access; the reel may be private/removed, or the session may be invalid for this environment/IP.)"
-        if is_youtube and ("HTTP Error 403" in msg or "403" in msg):
-            msg += " (YouTube returned 403. On Streamlit Cloud, this can be an IP/datacenter block; try again later, or run locally, or provide cookies.txt.)"
-        return None, msg
-
-
 def convert_to_mp3(input_path: Path, output_path: Path) -> Tuple[Optional[Path], Optional[str]]:
     if not input_path.exists():
-        return None, "Downloaded file not found."
+        return None, "Input file not found."
 
     ffmpeg_path = shutil.which("ffmpeg")
     if ffmpeg_path is None:
@@ -1627,103 +1526,84 @@ with script_col_b:
         key="script_sources_per_topic",
     )
 
-st.subheader("Video links (optional)")
+st.subheader("Uploaded videos/audio (optional)")
 st.caption(
-    "Paste YouTube/Instagram links (one per line). We'll download, convert to MP3, transcribe, and include the text as extra context."
+    "Upload video/audio files. We'll convert to MP3 if needed, transcribe, and include the text as extra context."
 )
-video_cookies_upload = st.file_uploader(
-    "cookies.txt (optional; helps with Instagram/login-required videos)",
-    type=["txt"],
-    key="video_cookies_upload",
-    help="Export cookies in Netscape cookies.txt format from your browser session and upload it here.",
+uploaded_media = st.file_uploader(
+    "Media files",
+    type=["mp4", "mov", "mkv", "webm", "mp3", "m4a", "wav", "aac", "ogg", "flac"],
+    accept_multiple_files=True,
+    key="uploaded_media_files",
 )
-if video_cookies_upload is not None:
-    st.caption(f"cookies.txt uploaded ({len(video_cookies_upload.getvalue()):,} bytes).")
-    st.warning(
-        "Instagram may still block downloads if the reel is private/removed or if you run this app on a different IP (e.g., hosted). "
-        "Best results are when running locally with fresh cookies."
-    )
-video_links_text = st.text_area(
-    "Video URLs",
-    value="",
-    height=110,
-    key="video_links",
-)
-video_limit = st.slider("Max videos to process", 1, 20, 5, 1, key="video_limit")
-process_videos = st.button(
-    "Process video links",
+media_limit = st.slider("Max files to process", 1, 20, 5, 1, key="media_limit")
+process_media = st.button(
+    "Process uploads",
     disabled=(not OPENAI_AVAILABLE),
-    key="process_videos",
+    key="process_media",
 )
-if process_videos:
-    urls = [line.strip() for line in video_links_text.splitlines() if line.strip()]
-    urls = urls[:video_limit]
+if process_media:
+    files = list(uploaded_media or [])[:media_limit]
     st.session_state["video_items"] = []
     st.session_state["video_errors"] = {}
     st.session_state["video_transcripts"] = []
-    for u in urls:
-        with st.spinner(f"Downloading/transcribing: {u}"):
-            progress = st.progress(0.0)
-            status = st.empty()
-            try:
-                with tempfile.TemporaryDirectory() as tmp:
-                    tmp_path = Path(tmp)
-                    cookie_path: Optional[Path] = None
-                    if video_cookies_upload is not None:
-                        cookie_path = tmp_path / "cookies.txt"
-                        cookie_path.write_bytes(video_cookies_upload.getvalue())
 
-                    status.write("Downloading audio...")
-                    audio_path, err = download_video_audio(
-                        u,
-                        tmp_path,
-                        cookiefile=cookie_path,
-                        progress_cb=progress.progress,
-                    )
-                    if err:
-                        st.session_state["video_errors"][u] = err
-                        progress.empty()
-                        status.empty()
-                        continue
+    if not files:
+        st.warning("No files uploaded.")
+    else:
+        for f in files:
+            name = getattr(f, "name", "upload")
+            with st.spinner(f"Transcribing: {name}"):
+                progress = st.progress(0.0)
+                status = st.empty()
+                try:
+                    with tempfile.TemporaryDirectory() as tmp:
+                        tmp_path = Path(tmp)
+                        raw_path = tmp_path / name
+                        raw_bytes = f.getvalue()
+                        raw_path.write_bytes(raw_bytes)
+                        progress.progress(0.15)
 
-                    status.write("Converting to MP3...")
-                    mp3_path, err = convert_to_mp3(audio_path, tmp_path / "audio.mp3")
-                    if err:
-                        st.session_state["video_errors"][u] = err
-                        progress.empty()
-                        status.empty()
-                        continue
+                        suffix = raw_path.suffix.lower().lstrip(".")
+                        if suffix == "mp3":
+                            mp3_path = raw_path
+                            err = None
+                        else:
+                            status.write("Converting to MP3...")
+                            mp3_path, err = convert_to_mp3(raw_path, tmp_path / "audio.mp3")
+                        if err or not mp3_path:
+                            st.session_state["video_errors"][name] = err or "Conversion failed."
+                            continue
+                        progress.progress(0.55)
 
-                    status.write("Transcribing...")
-                    transcript, err = transcribe_audio(
-                        mp3_path,
-                        script_api_key,
-                        model_name="gpt-4o-transcribe",
-                    )
-                    if err:
-                        st.session_state["video_errors"][u] = err
-                        progress.empty()
-                        status.empty()
-                        continue
+                        status.write("Transcribing...")
+                        transcript, err = transcribe_audio(
+                            mp3_path,
+                            script_api_key,
+                            model_name="gpt-4o-transcribe",
+                        )
+                        if err:
+                            st.session_state["video_errors"][name] = err
+                            continue
 
-                    st.session_state["video_transcripts"].append(
-                        {"url": u, "transcript": transcript}
-                    )
-                    progress.progress(1.0)
-            finally:
-                progress.empty()
-                status.empty()
+                        st.session_state["video_transcripts"].append(
+                            {"name": name, "transcript": transcript}
+                        )
+                        progress.progress(1.0)
+                finally:
+                    progress.empty()
+                    status.empty()
 
-    # Build a single context blob for prompting.
-    lines: List[str] = []
-    for item in st.session_state["video_transcripts"]:
-        url = item.get("url", "")
-        transcript = item.get("transcript", "")
-        lines.append(f"URL: {url}")
-        lines.append("Transcript:")
-        lines.append(transcript)
-        lines.append("")
-    st.session_state["video_context_text"] = "\n".join(lines).strip()
+        # Build a single context blob for prompting.
+        lines: List[str] = []
+        for item in st.session_state["video_transcripts"]:
+            name = item.get("name", "")
+            transcript = item.get("transcript", "")
+            lines.append(f"FILE: {name}")
+            lines.append("Transcript:")
+            lines.append(transcript)
+            lines.append("")
+        st.session_state["video_context_text"] = "\n".join(lines).strip()
 
 if st.session_state.get("video_errors"):
     with st.expander("Video processing errors", expanded=False):
@@ -1735,7 +1615,7 @@ if st.session_state.get("video_transcripts"):
     dfv = pd.DataFrame(
         [
             {
-                "url": x.get("url", ""),
+                "name": x.get("name", ""),
                 "transcript": x.get("transcript", ""),
             }
             for x in st.session_state["video_transcripts"]
@@ -1744,7 +1624,6 @@ if st.session_state.get("video_transcripts"):
     st.dataframe(
         dfv,
         hide_index=True,
-        column_config={"url": st.column_config.LinkColumn("url")},
     )
     st.text_area(
         "Transcript text (used as additional context)",
