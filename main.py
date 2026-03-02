@@ -1042,6 +1042,16 @@ def download_video_audio(
         elif d.get("status") == "finished":
             progress_cb(1.0)
 
+    parsed = urlparse(url)
+    host = (parsed.netloc or "").lower()
+    is_instagram = "instagram.com" in host or "instagr.am" in host
+    is_youtube = (
+        "youtube.com" in host
+        or "youtu.be" in host
+        or host.endswith(".youtube.com")
+        or host.endswith(".youtu.be")
+    )
+
     ydl_opts = {
         "format": "bestaudio/best",
         "outtmpl": outtmpl,
@@ -1052,6 +1062,41 @@ def download_video_audio(
     }
     if cookiefile and cookiefile.exists():
         ydl_opts["cookiefile"] = str(cookiefile)
+    if is_instagram:
+        ydl_opts["http_headers"] = {
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/122.0.0.0 Safari/537.36"
+            ),
+            "Referer": "https://www.instagram.com/",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        ydl_opts["retries"] = 3
+        ydl_opts["extractor_retries"] = 3
+        ydl_opts["sleep_interval_requests"] = 1
+    if is_youtube:
+        # Streamlit Cloud (datacenter IPs) can trigger stricter YouTube behavior; these options
+        # improve reliability for Shorts and some 403 cases without requiring cookies.
+        ydl_opts["http_headers"] = {
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/122.0.0.0 Safari/537.36"
+            ),
+            "Referer": "https://www.youtube.com/",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        ydl_opts["extractor_args"] = {
+            "youtube": {
+                # Try alternate clients; helps for some Shorts pages and anti-bot responses.
+                "player_client": ["android", "web"],
+            }
+        }
+        ydl_opts["retries"] = 5
+        ydl_opts["extractor_retries"] = 5
+        ydl_opts["sleep_interval_requests"] = 1
+        ydl_opts["geo_bypass"] = True
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -1062,6 +1107,10 @@ def download_video_audio(
         msg = str(exc)
         if "cookies-from-browser" in msg or "cookies" in msg or "login required" in msg:
             msg += " (Tip: for Instagram, export cookies to a cookies.txt file and upload it in the app.)"
+        if is_instagram and cookiefile and cookiefile.exists():
+            msg += " (cookies.txt was provided but Instagram still blocked access; the reel may be private/removed, or the session may be invalid for this environment/IP.)"
+        if is_youtube and ("HTTP Error 403" in msg or "403" in msg):
+            msg += " (YouTube returned 403. On Streamlit Cloud, this can be an IP/datacenter block; try again later, or run locally, or provide cookies.txt.)"
         return None, msg
 
 
@@ -1588,6 +1637,12 @@ video_cookies_upload = st.file_uploader(
     key="video_cookies_upload",
     help="Export cookies in Netscape cookies.txt format from your browser session and upload it here.",
 )
+if video_cookies_upload is not None:
+    st.caption(f"cookies.txt uploaded ({len(video_cookies_upload.getvalue()):,} bytes).")
+    st.warning(
+        "Instagram may still block downloads if the reel is private/removed or if you run this app on a different IP (e.g., hosted). "
+        "Best results are when running locally with fresh cookies."
+    )
 video_links_text = st.text_area(
     "Video URLs",
     value="",
