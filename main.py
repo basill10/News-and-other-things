@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
@@ -31,6 +32,13 @@ try:
     OPENAI_AVAILABLE = True
 except Exception:
     OPENAI_AVAILABLE = False
+
+try:
+    import trafilatura
+
+    TRAFILATURA_AVAILABLE = True
+except Exception:
+    TRAFILATURA_AVAILABLE = False
 
 GDELT_ENDPOINT = "https://api.gdeltproject.org/api/v2/doc/doc"
 ELEVEN_BASE = "https://api.elevenlabs.io/v1"
@@ -71,6 +79,111 @@ WEBSEARCH_CATEGORY_HINTS = {
 
 def clamp01(value: float) -> float:
     return max(0.0, min(1.0, value))
+
+
+def clean_whitespace(text: str) -> str:
+    if not text:
+        return ""
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_article_html(url: str) -> Tuple[Optional[str], Optional[str]]:
+    if not url:
+        return None, "Empty URL."
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/122.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    try:
+        r = requests.get(url, headers=headers, timeout=25)
+        r.raise_for_status()
+        r.encoding = r.encoding or "utf-8"
+        return r.text, None
+    except Exception as exc:
+        return None, str(exc)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def extract_article_text(url: str) -> Tuple[Optional[str], Optional[str]]:
+    html, err = fetch_article_html(url)
+    if err:
+        return None, err
+    if not html:
+        return None, "Empty HTML."
+    if not TRAFILATURA_AVAILABLE:
+        return None, "trafilatura is not installed. Run: pip install trafilatura"
+    try:
+        text = trafilatura.extract(
+            html,
+            url=url,
+            include_comments=False,
+            include_tables=False,
+            favor_precision=True,
+        )
+        text = clean_whitespace(text or "")
+        if not text:
+            return None, "Could not extract article text."
+        return text, None
+    except Exception as exc:
+        return None, str(exc)
+
+
+def extract_relevant_snippets_from_article(
+    *,
+    article_url: str,
+    article_text: str,
+    topics: List[str],
+    api_key: str,
+    model_name: str,
+) -> Tuple[Optional[str], Optional[str]]:
+    if not OPENAI_AVAILABLE:
+        return None, "openai is not installed. Run: pip install openai"
+    resolved_key = resolve_api_key(api_key)
+    if not resolved_key:
+        return None, "OpenAI API key not found. Add OPENAI_API_KEY to Streamlit secrets (.streamlit/secrets.toml)."
+    if not article_text.strip():
+        return None, "Empty article text."
+
+    client = OpenAI(api_key=resolved_key)
+    topics_block = "\n".join([f"- {t}" for t in topics if t.strip()]) or "- (none)"
+    # Keep input bounded to reduce context size.
+    bounded_text = article_text.strip()[:20000]
+    prompt = (
+        "You are helping write a 3-item Pakistan economy news interpreter script.\n"
+        "Given the article text and the 3 topics, extract ONLY the most relevant material "
+        "that could be woven into the final script.\n\n"
+        "Return plain text in this format:\n"
+        "RELEVANCE: relevant|not_relevant\n"
+        "HEADLINE: <short headline if obvious>\n"
+        "KEY FACTS:\n"
+        "- ...\n"
+        "- ...\n"
+        "NUMBERS:\n"
+        "- ... (optional)\n"
+        "QUOTES:\n"
+        "- ... (optional; short)\n"
+        "WHY IT MATTERS (1-2 lines): ...\n\n"
+        f"TOPICS:\n{topics_block}\n\n"
+        f"ARTICLE URL:\n{article_url}\n\n"
+        "ARTICLE TEXT:\n"
+        f"{bounded_text}\n"
+    )
+    try:
+        resp = client.responses.create(model=model_name, input=prompt)
+        text = extract_response_text(resp)
+        text = clean_whitespace(text)
+        if not text:
+            return None, "Empty model response."
+        return text, None
+    except Exception as exc:
+        return None, str(exc)
 
 
 def safe_float(value: object) -> Optional[float]:
@@ -1233,6 +1346,12 @@ if "video_transcripts" not in st.session_state:
     st.session_state["video_transcripts"] = []
 if "expert_context_text" not in st.session_state:
     st.session_state["expert_context_text"] = ""
+if "article_context_text" not in st.session_state:
+    st.session_state["article_context_text"] = ""
+if "article_snippets" not in st.session_state:
+    st.session_state["article_snippets"] = []
+if "article_errors" not in st.session_state:
+    st.session_state["article_errors"] = {}
 
 if not PYTRENDS_AVAILABLE:
     st.error("pytrends is not installed. Run: pip install pytrends")
@@ -1639,6 +1758,106 @@ if st.session_state.get("video_transcripts"):
         key="download_video_context",
     )
 
+st.subheader("Manual article links (optional)")
+st.caption(
+    "Paste article links (one per line). We'll fetch the pages, extract the article text, then pull the most relevant snippets to weave into the final script."
+)
+article_links_text = st.text_area(
+    "Article URLs",
+    value="",
+    height=110,
+    key="article_links",
+)
+article_col_a, article_col_b = st.columns([1, 2])
+with article_col_a:
+    article_limit = st.slider("Max articles", 1, 20, 5, 1, key="article_limit")
+with article_col_b:
+    article_use_openai = st.toggle(
+        "Use OpenAI to extract relevant snippets",
+        value=True,
+        key="article_use_openai",
+        help="If off, the raw extracted article text (truncated) is used instead.",
+    )
+
+process_articles = st.button(
+    "Process article links",
+    disabled=(not OPENAI_AVAILABLE),
+    key="process_articles",
+)
+if process_articles:
+    urls = [line.strip() for line in article_links_text.splitlines() if line.strip()]
+    urls = urls[:article_limit]
+    st.session_state["article_errors"] = {}
+    st.session_state["article_snippets"] = []
+    st.session_state["article_context_text"] = ""
+
+    if not urls:
+        st.warning("No article URLs provided.")
+    else:
+        for url in urls:
+            with st.spinner(f"Processing article: {url}"):
+                article_text, err = extract_article_text(url)
+                if err:
+                    st.session_state["article_errors"][url] = err
+                    continue
+
+                if not article_use_openai:
+                    snippet = clean_whitespace((article_text or "")[:12000])
+                    st.session_state["article_snippets"].append(
+                        {"url": url, "snippet": snippet}
+                    )
+                    continue
+
+                snippet, err = extract_relevant_snippets_from_article(
+                    article_url=url,
+                    article_text=article_text or "",
+                    topics=topics if topics_ok else [],
+                    api_key=script_api_key,
+                    model_name=script_model_name,
+                )
+                if err:
+                    st.session_state["article_errors"][url] = err
+                    continue
+                st.session_state["article_snippets"].append(
+                    {"url": url, "snippet": snippet or ""}
+                )
+
+        lines: List[str] = []
+        for item in st.session_state["article_snippets"]:
+            url = item.get("url", "")
+            snippet = item.get("snippet", "")
+            lines.append(f"URL: {url}")
+            lines.append("NOTES:")
+            lines.append(snippet)
+            lines.append("")
+        st.session_state["article_context_text"] = "\n".join(lines).strip()
+
+if st.session_state.get("article_errors"):
+    with st.expander("Article processing errors", expanded=False):
+        for u, e in st.session_state["article_errors"].items():
+            st.error(f"{u}: {e}")
+
+if st.session_state.get("article_snippets"):
+    st.subheader("Article snippets")
+    st.dataframe(
+        pd.DataFrame(st.session_state["article_snippets"]),
+        hide_index=True,
+        column_config={"url": st.column_config.LinkColumn("url")},
+    )
+    st.text_area(
+        "Article snippet context (used as additional context)",
+        value=st.session_state.get("article_context_text", ""),
+        height=220,
+        key="article_context_preview",
+    )
+    st.download_button(
+        "Download article context",
+        data=(st.session_state.get("article_context_text", "") or "").encode("utf-8"),
+        file_name="article_snippets.txt",
+        mime="text/plain",
+        key="download_article_context",
+    )
+
 st.subheader("Expert interviews (.txt)")
 st.caption("Upload one or more .txt files. The quotes will be used as added context for the final script.")
 expert_files = st.file_uploader(
@@ -1760,11 +1979,18 @@ if generate_clicked:
             st.error("Fetch sources first for: " + ", ".join(missing))
         else:
             with st.spinner("Generating script..."):
+                extra_context_parts = [
+                    st.session_state.get("video_context_text", ""),
+                    st.session_state.get("article_context_text", ""),
+                ]
+                combined_extra_context = "\n\n".join(
+                    [p for p in extra_context_parts if str(p).strip()]
+                ).strip()
                 script, err = generate_interpreter_script(
                     example_script=example_script_text,
                     topics=topics,
                     sources_by_topic=st.session_state.get("script_sources", {}),
-                    extra_context=st.session_state.get("video_context_text", ""),
+                    extra_context=combined_extra_context,
                     expert_context=st.session_state.get("expert_context_text", ""),
                     model_name=script_model_name,
                     api_key=script_api_key,
