@@ -1023,6 +1023,7 @@ def generate_interpreter_script(
 def download_video_audio(
     url: str,
     workdir: Path,
+    cookiefile: Optional[Path] = None,
     progress_cb: Optional[callable] = None,
 ) -> Tuple[Optional[Path], Optional[str]]:
     if not YTDLP_AVAILABLE:
@@ -1049,6 +1050,8 @@ def download_video_audio(
         "no_warnings": True,
         "progress_hooks": [hook],
     }
+    if cookiefile and cookiefile.exists():
+        ydl_opts["cookiefile"] = str(cookiefile)
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -1056,7 +1059,10 @@ def download_video_audio(
             filename = ydl.prepare_filename(info)
         return Path(filename), None
     except Exception as exc:
-        return None, str(exc)
+        msg = str(exc)
+        if "cookies-from-browser" in msg or "cookies" in msg or "login required" in msg:
+            msg += " (Tip: for Instagram, export cookies to a cookies.txt file and upload it in the app.)"
+        return None, msg
 
 
 def convert_to_mp3(input_path: Path, output_path: Path) -> Tuple[Optional[Path], Optional[str]]:
@@ -1576,6 +1582,12 @@ st.subheader("Video links (optional)")
 st.caption(
     "Paste YouTube/Instagram links (one per line). We'll download, convert to MP3, transcribe, and include the text as extra context."
 )
+video_cookies_upload = st.file_uploader(
+    "cookies.txt (optional; helps with Instagram/login-required videos)",
+    type=["txt"],
+    key="video_cookies_upload",
+    help="Export cookies in Netscape cookies.txt format from your browser session and upload it here.",
+)
 video_links_text = st.text_area(
     "Video URLs",
     value="",
@@ -1601,9 +1613,17 @@ if process_videos:
             try:
                 with tempfile.TemporaryDirectory() as tmp:
                     tmp_path = Path(tmp)
+                    cookie_path: Optional[Path] = None
+                    if video_cookies_upload is not None:
+                        cookie_path = tmp_path / "cookies.txt"
+                        cookie_path.write_bytes(video_cookies_upload.getvalue())
+
                     status.write("Downloading audio...")
                     audio_path, err = download_video_audio(
-                        u, tmp_path, progress_cb=progress.progress
+                        u,
+                        tmp_path,
+                        cookiefile=cookie_path,
+                        progress_cb=progress.progress,
                     )
                     if err:
                         st.session_state["video_errors"][u] = err
