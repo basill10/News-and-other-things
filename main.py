@@ -1062,11 +1062,20 @@ def download_video_audio(
 def convert_to_mp3(input_path: Path, output_path: Path) -> Tuple[Optional[Path], Optional[str]]:
     if not input_path.exists():
         return None, "Downloaded file not found."
-    if shutil.which("ffmpeg") is None:
+
+    ffmpeg_path = shutil.which("ffmpeg")
+    if ffmpeg_path is None:
+        try:
+            import imageio_ffmpeg  # type: ignore
+
+            ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+        except Exception:
+            ffmpeg_path = None
+    if not ffmpeg_path:
         return None, "ffmpeg is not available. Install ffmpeg to convert audio."
 
     cmd = [
-        "ffmpeg",
+        ffmpeg_path,
         "-y",
         "-i",
         str(input_path),
